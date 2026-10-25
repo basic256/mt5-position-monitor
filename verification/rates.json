@@ -1,0 +1,55 @@
+{
+  "tests": [
+    {
+      "name": "current BTC BE",
+      "value": 80481.3,
+      "expected": 80481.3,
+      "pass": true
+    },
+    {
+      "name": "current fixed margin stopout",
+      "value": 80899.31360000001,
+      "expected": 80899.3136,
+      "pass": true
+    },
+    {
+      "name": "swap cost lowers short BE",
+      "value": 80478.8,
+      "expected": 80478.8,
+      "pass": true
+    },
+    {
+      "name": "buy BE",
+      "value": 90,
+      "expected": 90,
+      "pass": true
+    },
+    {
+      "name": "20 percent margin threshold",
+      "value": 804.8140000000001,
+      "expected": 804.814,
+      "pass": true
+    },
+    {
+      "name": "SO precedes none of current SLs",
+      "value": 80700,
+      "expected": 80700,
+      "pass": true
+    }
+  ],
+  "liveSnapshot": {
+    "positions": 20,
+    "lots": 10,
+    "breakEvenAsk": 80481.3,
+    "stopOutAskFixedMargin20Percent": 80899.31360000001,
+    "slBeforeStopout": true
+  },
+  "assumptions": {
+    "balance": 4984.95,
+    "margin": 4024.07,
+    "stopOutPercent": 20,
+    "swaps": 0
+  },
+  "compiler": "0 errors, 0 warnings",
+  "runtime": "Unverified; MCP indicator catalog has not recognized installed file"
+}

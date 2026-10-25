@@ -1,0 +1,77 @@
+{
+  "formulaTests": [
+    {
+      "name": "sell_tp",
+      "buy": false,
+      "entry": 80417,
+      "exit": 79200,
+      "lots": 0.5,
+      "contract": 1,
+      "swap": 0,
+      "fee": 0,
+      "expected": 608.5,
+      "actual": 608.5,
+      "pass": true
+    },
+    {
+      "name": "sell_sl",
+      "buy": false,
+      "entry": 80417,
+      "exit": 80700,
+      "lots": 0.5,
+      "contract": 1,
+      "swap": 0,
+      "fee": 0,
+      "expected": -141.5,
+      "actual": -141.5,
+      "pass": true
+    },
+    {
+      "name": "profitable_sl",
+      "buy": false,
+      "entry": 80417,
+      "exit": 80000,
+      "lots": 0.5,
+      "contract": 1,
+      "swap": -2,
+      "fee": 0,
+      "expected": 206.5,
+      "actual": 206.5,
+      "pass": true
+    },
+    {
+      "name": "buy_tp_swap_fee",
+      "buy": true,
+      "entry": 100,
+      "exit": 110,
+      "lots": 2,
+      "contract": 10,
+      "swap": -3,
+      "fee": 1,
+      "expected": 195,
+      "actual": 195,
+      "pass": true
+    },
+    {
+      "name": "buy_sl",
+      "buy": true,
+      "entry": 100,
+      "exit": 90,
+      "lots": 2,
+      "contract": 10,
+      "swap": 0,
+      "fee": 0,
+      "expected": -200,
+      "actual": -200,
+      "pass": true
+    }
+  ],
+  "liveSnapshot": {
+    "positions": 20,
+    "lots": 10,
+    "tp": 18813,
+    "sl": -2187
+  },
+  "compiler": "0 errors, 0 warnings",
+  "runtime": "NOT YET VERIFIED: MCP indicator catalog has not recognized the installed file"
+}
