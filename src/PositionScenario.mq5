@@ -322,8 +322,7 @@ void Render(const int count,const bool ranking_ok,
    int current=PanelX(278);
    int all=PanelX(423);
    int half=PanelX(568);
-   Label("title","Position Scenario  |  "+_Symbol+"  |  "+IntegerToString(count)+
-         "ポジション / 変更対象 "+IntegerToString(count/2)+"ポジション",
+   Label("title","Position Scenario  |  "+_Symbol+"  |  "+IntegerToString(count)+"ポジション",
          left,InpY+11,clrWhite,InpFontSize+1);
    Label("timestamp","試算時刻 "+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
          left,InpY+36,clrWhite,InpFontSize);

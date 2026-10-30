@@ -300,8 +300,7 @@ void ScenarioRender(const int count,const bool ranking_ok,
    int current=ScenarioPanelX(278);
    int all=ScenarioPanelX(423);
    int half=ScenarioPanelX(568);
-   ScenarioLabel("title","Position Scenario  |  "+_Symbol+"  |  "+IntegerToString(count)+
-         "ポジション / 変更対象 "+IntegerToString(count/2)+"ポジション",
+   ScenarioLabel("title","Position Scenario  |  "+_Symbol+"  |  "+IntegerToString(count)+"ポジション",
          left,InpScenarioY+11,clrWhite,InpFontSize+1);
    ScenarioLabel("timestamp","試算時刻 "+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
          left,InpScenarioY+36,clrWhite,InpFontSize);
