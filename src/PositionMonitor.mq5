@@ -1,5 +1,5 @@
 // Read-only TP/SL totals. No trading functions, DLLs, network or advertisements.
-#property version   "1.37"
+#property version   "1.39"
 #property description "Read-only TP/SL totals for open positions."
 #property indicator_chart_window
 #property indicator_buffers 5
@@ -16,6 +16,7 @@
 #property indicator_label5 "Margin level percent"
 
 input bool InpCurrentSymbolOnly=true;        // 現在のチャート銘柄のみ
+input bool InpShowAccountTotals=true;         // 全銘柄のTP/SL予定額も表示
 input bool InpIncludeSwap=true;              // 現在までのスワップを含める
 input double InpExitCommissionPerLot=0.0;    // 決済時の手数料/lot（口座通貨・片道）
 input ENUM_BASE_CORNER InpCorner=CORNER_LEFT_LOWER; // 表示する隅
@@ -24,6 +25,8 @@ input int InpY=25;                          // 上下端からの距離 px
 input int InpFontSize=11;                   // 損益の文字サイズ
 input int InpRowSpacing=0;                  // 行間 px（0=文字サイズに合わせて自動）
 input string InpFont="Meiryo";              // フォント
+input bool InpShowBackground=true;          // 数値の背後に背景を表示
+input color InpBackgroundColor=C'22,24,29'; // 背景色
 input int InpDecimals=2;                    // 小数点以下の桁数
 input bool InpShowHeader=true;              // 銘柄・件数・スワップ設定
 input bool InpShowJPY=false;                // 円換算も表示（気配値に換算銘柄が必要）
@@ -41,6 +44,11 @@ input color InpCurrentLossColor=clrRed;     // 現在損益がマイナスの色
 input color InpMarginCallColor=clrRed;       // マージンコール以下の維持率の色
 input double InpMarginWarningPercent=400.0;  // 維持率の警戒表示基準 %
 input color InpMarginWarningColor=clrYellow; // 警戒基準未満の維持率の色
+input double InpTrialTP=0.0;                 // 仮TP価格（0=試算しない）
+input double InpTrialSL=0.0;                 // 仮SL価格（0=試算しない）
+input bool InpScenarioAlignRight=false;     // 試算パネルを右上に表示
+input int InpScenarioX=15;                  // 試算パネルの左右端からの距離 px
+input int InpScenarioY=25;                  // 試算パネルの上端からの距離 px
 
 double TPBuffer[],SLBuffer[];
 double BEBuffer[],SOBuffer[],MarginBuffer[];
@@ -48,12 +56,85 @@ double break_even=EMPTY_VALUE,stop_out=EMPTY_VALUE,margin_level=EMPTY_VALUE;
 string prefix;
 double total_tp=0,total_sl=0;
 bool valid_tp=true,valid_sl=true;
+double account_tp=0,account_sl=0;
+bool valid_account_tp=true,valid_account_sl=true;
 int total_positions=0;
+int account_positions=0;
 string account_currency;
 uint last_layout_tick=0;
 bool layout_dirty=true;
 bool layout_visible=false;
 bool layout_measure_requested=false;
+bool monitor_hidden=false;
+bool scenario_hidden=false;
+int max_background_width=0;
+string scenario_position_key="";
+uint last_scenario_check=0;
+#include "PositionScenarioPanel.mqh"
+string ScenarioPrefix()
+{
+   return "PositionScenario_"+IntegerToString(ChartID())+"_";
+}
+void SetPanelVisibility(const string target_prefix,const bool hidden)
+{
+   int count=ObjectsTotal(0);
+   for(int i=0;i<count;i++)
+   {
+      string name=ObjectName(0,i);
+      if(StringFind(name,target_prefix)!=0 ||
+         name==prefix+"toggle_monitor" || name==prefix+"toggle_scenario") continue;
+      long periods=hidden ? OBJ_NO_PERIODS : OBJ_ALL_PERIODS;
+      if(ObjectGetInteger(0,name,OBJPROP_TIMEFRAMES)!=periods)
+         ObjectSetInteger(0,name,OBJPROP_TIMEFRAMES,periods);
+   }
+}
+void SetToggleText(const string suffix,const bool hidden)
+{
+   string noun=suffix=="monitor" ? "監視" : "試算";
+   string name=prefix+"toggle_"+suffix;
+   ObjectSetString(0,name,OBJPROP_TEXT,noun+(hidden ? "を表示" : "を隠す"));
+   ObjectSetInteger(0,name,OBJPROP_STATE,false);
+}
+void CreateToggleButton(const string suffix,const int xdistance)
+{
+   string name=prefix+"toggle_"+suffix;
+   if(!ObjectCreate(0,name,OBJ_BUTTON,0,0,0)) return;
+   ObjectSetInteger(0,name,OBJPROP_CORNER,CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0,name,OBJPROP_XDISTANCE,xdistance);
+   ObjectSetInteger(0,name,OBJPROP_YDISTANCE,2);
+   ObjectSetInteger(0,name,OBJPROP_XSIZE,80);
+   ObjectSetInteger(0,name,OBJPROP_YSIZE,20);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clrWhite);
+   ObjectSetInteger(0,name,OBJPROP_BGCOLOR,C'45,48,55');
+   ObjectSetInteger(0,name,OBJPROP_BORDER_COLOR,C'100,104,110');
+   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,9);
+   ObjectSetInteger(0,name,OBJPROP_ZORDER,1000);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+   ObjectSetString(0,name,OBJPROP_FONT,InpFont);
+   SetToggleText(suffix,false);
+}
+int DisplayRows()
+{
+   return (InpShowHeader ? 1 : 0)+2+
+          (InpCurrentSymbolOnly && InpShowAccountTotals ? 2 : 0)+
+          (InpShowRates ? 3 : 0)+(InpShowCurrentProfit ? 2 : 0)+
+          (InpShowAccountDetails ? 4 : 0)+(InpShowMarginLevel ? 1 : 0);
+}
+void CreateBackground()
+{
+   if(!InpShowBackground) return;
+   string name=prefix+"background";
+   if(!ObjectCreate(0,name,OBJ_RECTANGLE_LABEL,0,0,0)) return;
+   ObjectSetInteger(0,name,OBJPROP_XDISTANCE,100000);
+   ObjectSetInteger(0,name,OBJPROP_CORNER,InpCorner);
+   ObjectSetInteger(0,name,OBJPROP_BGCOLOR,InpBackgroundColor);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,InpBackgroundColor);
+   ObjectSetInteger(0,name,OBJPROP_BORDER_TYPE,BORDER_FLAT);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+   ObjectSetInteger(0,name,OBJPROP_BACK,false);
+}
 
 // Round before grouping so 999.999 becomes 1,000.00.
 string Grouped(const double value,const int digits)
@@ -186,9 +267,7 @@ bool PutLabel(const string suffix,const string text,const int row,const color co
    ENUM_ANCHOR_POINT anchor=bottom ? (right ? ANCHOR_RIGHT_LOWER : ANCHOR_LEFT_LOWER)
                                    : (right ? ANCHOR_RIGHT_UPPER : ANCHOR_LEFT_UPPER);
    int spacing=(int)MathMax(InpRowSpacing,InpFontSize*2);
-   int rows=(InpShowHeader ? 3 : 2)+(InpShowRates ? 3 : 0)
-            +(InpShowCurrentProfit ? 1 : 0)+(InpShowAccountDetails ? 4 : 0)
-            +(InpShowMarginLevel ? 1 : 0);
+   int rows=DisplayRows();
    int distance=(int)MathMax(0,InpY)+(bottom ? rows-1-row : row)*spacing;
    if(created)
    {
@@ -199,6 +278,7 @@ bool PutLabel(const string suffix,const string text,const int row,const color co
       ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
       ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
       ObjectSetInteger(0,name,OBJPROP_BACK,false);
+      ObjectSetInteger(0,name,OBJPROP_TIMEFRAMES,monitor_hidden ? OBJ_NO_PERIODS : OBJ_ALL_PERIODS);
       ObjectSetString(0,name,OBJPROP_FONT,InpFont);
    }
    if(created || ObjectGetInteger(0,name,OBJPROP_COLOR)!=(long)colour)
@@ -208,7 +288,11 @@ bool PutLabel(const string suffix,const string text,const int row,const color co
       string previous_text=ObjectGetString(0,name,OBJPROP_TEXT);
       if(previous_text!=text)
       {
-         if(StringLen(previous_text)!=StringLen(text)) layout_dirty=true;
+         if(StringLen(previous_text)!=StringLen(text))
+         {
+            layout_dirty=true;
+            layout_measure_requested=false;
+         }
          ObjectSetString(0,name,OBJPROP_TEXT,text);
       }
    }
@@ -219,7 +303,10 @@ bool PutLabel(const string suffix,const string text,const int row,const color co
    if(suffix=="so") tip="最初の強制決済の推定開始価格。現在の必要証拠金・他銘柄損益・為替・スプレッドを固定し、途中のSL/TP決済を無視した仮定です。全件決済価格ではありません。価格基準はショートのみAsk、ロングのみBid、両建ては固定スプレッドのBid換算。";
    if(suffix=="be") tip="現在チャート銘柄の合計損益がゼロになる決済価格。Swap設定と入力済み決済手数料を反映。価格基準はショートのみAsk、ロングのみBid、両建ては固定スプレッドのBid換算。";
    if(suffix=="price") tip="現在チャート銘柄の価格。損益分岐・ロスカットとの比較のため、これらの推定レートと同じ価格基準を表示します。";
-   if(suffix=="current_profit") tip="口座全体の現在の含み損益。MT5のACCOUNT_PROFITと、現在の口座残高に対する増減率を表示します。";
+   if(suffix=="account_tp" || suffix=="account_sl")
+      tip="口座内の全保有銘柄がそれぞれ現在設定のTP/SLで決済された場合の合計。未設定は合計から除外し、黄色で警告します。";
+   if(suffix=="symbol_profit") tip="現在チャート銘柄の含み損益。各保有ポジションのPOSITION_PROFITの合計で、スワップは含みません。右側は口座残高に対する増減率です。";
+   if(suffix=="current_profit") tip="口座全体の現在の含み損益。MT5のACCOUNT_PROFITを表示し、スワップは含みません。右側は口座残高に対する増減率です。";
    if(suffix=="balance") tip="口座全体の残高。未決済ポジションの損益は含みません。";
    if(suffix=="equity") tip="口座全体の有効証拠金。現在の未決済損益を反映したMT5の口座値です。";
    if(suffix=="used_margin") tip="口座全体の必要証拠金。MT5の口座値です。";
@@ -254,11 +341,11 @@ bool RateDifferenceValues(const double target,const double current,string &rate_
    pips=SignedGrouped(difference/pip_size,1);
    return true;
 }
-string RowText(const string title,const double value,const int missing,const int errors)
+string RowText(const string title,const double value,const int errors)
 {
    if(errors>0) return title+"  計算不可 ("+IntegerToString(errors)+"件)";
    string text=title+"  "+Money(value,account_currency,InpDecimals);
-   if(InpShowJPY && total_positions>0)
+   if(InpShowJPY && (total_positions>0 || account_positions>0))
    {
       double yen;
       datetime stamp;
@@ -269,7 +356,6 @@ string RowText(const string title,const double value,const int missing,const int
       }
       else text+="  /  JPY換算不可";
    }
-   if(missing>0) text+=" [未設定 "+IntegerToString(missing)+"件・一部合計]";
    return text;
 }
 // Keep numbers separate from units and annotations; all rows share one numeric column.
@@ -339,6 +425,19 @@ void SetRatioAnnotation(const string suffix,const double value,const double bala
    ObjectSetString(0,prefix+base+"_value",OBJPROP_TOOLTIP,tip);
    ObjectSetString(0,prefix+base+"_suffix",OBJPROP_TOOLTIP,tip);
 }
+void SetMissingWarning(const string suffix,const int missing,const int row)
+{
+   string name=prefix+suffix+"_missing";
+   if(missing<=0)
+   {
+      if(ObjectFind(0,name)>=0) ObjectDelete(0,name);
+      return;
+   }
+   PutLabel(suffix+"_missing","未設定 "+IntegerToString(missing)+"件・一部合計",
+            row,clrYellow,InpFontSize);
+   ObjectSetString(0,name,OBJPROP_TOOLTIP,
+                   "TP/SL未設定のポジションは合計損益に含めません。");
+}
 void SetRateAnnotation(const string suffix,const double target,const double current,
                        const int row,const color colour)
 {
@@ -346,24 +445,47 @@ void SetRateAnnotation(const string suffix,const double target,const double curr
    if(!RateDifferenceValues(target,current,rate_difference,pips)) { DeleteAnnotation(suffix+"_rate"); return; }
    string base=suffix+"_rate";
    PutLabel(base+"_value",pips,row,colour,InpFontSize);
-   PutLabel(base+"_middle"," pips   ",row,colour,InpFontSize);
+   PutLabel(base+"_middle"," pips ",row,colour,InpFontSize);
    PutLabel(base+"_pips",rate_difference,row,colour,InpFontSize);
    string tip=ObjectGetString(0,prefix+suffix,OBJPROP_TOOLTIP);
    string parts[3]={"_value","_middle","_pips"};
    for(int i=0;i<3;i++) ObjectSetString(0,prefix+base+parts[i],OBJPROP_TOOLTIP,tip);
 }
 void MoneyRows(const int first_row,const int missing_tp,const int error_tp,
-               const int missing_sl,const int error_sl)
+               const int missing_sl,const int error_sl,
+               const int account_missing_tp,const int account_error_tp,
+               const int account_missing_sl,const int account_error_sl)
 {
    double balance=AccountInfoDouble(ACCOUNT_BALANCE);
    color tp_color=!valid_tp ? InpWarningColor : (total_tp<0 ? InpLossColor : InpProfitColor);
    color sl_color=!valid_sl ? InpWarningColor : (total_sl<0 ? InpLossColor : InpProfitColor);
-   RenderValueRow("tp","TP合計",StringSubstr(RowText("",total_tp,missing_tp,error_tp),2),first_row,tp_color);
-   RenderValueRow("sl","SL合計",StringSubstr(RowText("",total_sl,missing_sl,error_sl),2),first_row+1,sl_color);
-   if(error_tp==0) SetRatioAnnotation("tp",total_tp,balance,first_row,tp_color);
+   RenderValueRow("tp",InpCurrentSymbolOnly ? "TP合計(銘柄)" : "TP合計(口座)",
+                  StringSubstr(RowText("",total_tp,error_tp),2),first_row,tp_color);
+   RenderValueRow("sl",InpCurrentSymbolOnly ? "SL合計(銘柄)" : "SL合計(口座)",
+                  StringSubstr(RowText("",total_sl,error_sl),2),first_row+1,sl_color);
+   if(valid_tp) SetRatioAnnotation("tp",total_tp,balance,first_row,tp_color);
    else DeleteAnnotation("tp_ratio");
-   if(error_sl==0) SetRatioAnnotation("sl",total_sl,balance,first_row+1,sl_color);
+   if(valid_sl) SetRatioAnnotation("sl",total_sl,balance,first_row+1,sl_color);
    else DeleteAnnotation("sl_ratio");
+   SetMissingWarning("tp",missing_tp,first_row);
+   SetMissingWarning("sl",missing_sl,first_row+1);
+   if(InpCurrentSymbolOnly && InpShowAccountTotals)
+   {
+      color account_tp_color=!valid_account_tp ? InpWarningColor :
+                             (account_tp<0 ? InpLossColor : InpProfitColor);
+      color account_sl_color=!valid_account_sl ? InpWarningColor :
+                             (account_sl<0 ? InpLossColor : InpProfitColor);
+      RenderValueRow("account_tp","TP合計(口座)",StringSubstr(RowText("",account_tp,account_error_tp),2),
+                     first_row+2,account_tp_color);
+      RenderValueRow("account_sl","SL合計(口座)",StringSubstr(RowText("",account_sl,account_error_sl),2),
+                     first_row+3,account_sl_color);
+      if(valid_account_tp) SetRatioAnnotation("account_tp",account_tp,balance,first_row+2,account_tp_color);
+      else DeleteAnnotation("account_tp_ratio");
+      if(valid_account_sl) SetRatioAnnotation("account_sl",account_sl,balance,first_row+3,account_sl_color);
+      else DeleteAnnotation("account_sl_ratio");
+      SetMissingWarning("account_tp",account_missing_tp,first_row+2);
+      SetMissingWarning("account_sl",account_missing_sl,first_row+3);
+   }
 }
 void PublishBuffers()
 {
@@ -393,6 +515,7 @@ bool LabelWidthsReady()
 }
 void CreateFourDigitWidthSamples()
 {
+   PutLabel("width_currency"," "+account_currency,0,InpInfoColor,InpFontSize);
    int rate_digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);
    string samples[3]={SignedGrouped(9999.99,2),SignedGrouped(9999.9,1),
                       SignedGrouped(9999,rate_digits)};
@@ -409,30 +532,76 @@ int FourDigitWidth(const string kind)
    return (int)MathMax(ObjectGetInteger(0,base+"_plus",OBJPROP_XSIZE),
                        ObjectGetInteger(0,base+"_minus",OBJPROP_XSIZE));
 }
+void FitBackground(const int reserved_width)
+{
+   string background=prefix+"background";
+   if(ObjectFind(0,background)<0) return;
+   int chart_width=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS);
+   int chart_height=(int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS);
+   bool right=(InpCorner==CORNER_RIGHT_UPPER || InpCorner==CORNER_RIGHT_LOWER);
+   bool bottom=(InpCorner==CORNER_LEFT_LOWER || InpCorner==CORNER_RIGHT_LOWER);
+   int left=INT_MAX,top=INT_MAX,far_right=0,far_bottom=0;
+   int count=ObjectsTotal(0,0,OBJ_LABEL);
+   for(int i=0;i<count;i++)
+   {
+      string name=ObjectName(0,i,0,OBJ_LABEL);
+      if(StringFind(name,prefix)!=0 || StringFind(name,prefix+"width_")==0) continue;
+      int w=(int)ObjectGetInteger(0,name,OBJPROP_XSIZE);
+      int h=(int)ObjectGetInteger(0,name,OBJPROP_YSIZE);
+      if(w<=0 || h<=0) continue;
+      int x=(int)ObjectGetInteger(0,name,OBJPROP_XDISTANCE);
+      int y=(int)ObjectGetInteger(0,name,OBJPROP_YDISTANCE);
+      if(right) x=chart_width-x;
+      if(bottom) y=chart_height-y;
+      ENUM_ANCHOR_POINT anchor=(ENUM_ANCHOR_POINT)ObjectGetInteger(0,name,OBJPROP_ANCHOR);
+      if(anchor==ANCHOR_RIGHT_UPPER || anchor==ANCHOR_RIGHT_LOWER) x-=w;
+      if(anchor==ANCHOR_LEFT_LOWER || anchor==ANCHOR_RIGHT_LOWER) y-=h;
+      left=(int)MathMin(left,x);
+      top=(int)MathMin(top,y);
+      far_right=(int)MathMax(far_right,x+w);
+      far_bottom=(int)MathMax(far_bottom,y+h);
+   }
+   if(left==INT_MAX) return;
+   const int pad=6;
+   left=(int)MathMax(0,left-pad);
+   top=(int)MathMax(0,top-pad);
+   // Reserve the four-digit layout on the first draw. Never shrink the panel
+   // when an actual value switches between three and four digits.
+   max_background_width=(int)MathMax(max_background_width,
+                                  MathMax(reserved_width,far_right-left+pad));
+   int panel_width=(int)MathMin(chart_width,max_background_width);
+   int panel_height=far_bottom-top+pad;
+   ObjectSetInteger(0,background,OBJPROP_XSIZE,panel_width);
+   ObjectSetInteger(0,background,OBJPROP_YSIZE,panel_height);
+   ObjectSetInteger(0,background,OBJPROP_XDISTANCE,right ? panel_width : 0);
+   ObjectSetInteger(0,background,OBJPROP_YDISTANCE,bottom ? chart_height-top : top);
+}
 void AlignDetailRows()
 {
-   string names[11]={"tp","sl","price","be","so","current_profit","balance","equity","used_margin","free_margin","margin"};
-   string money_names[3]={"tp","sl","current_profit"};
+   string names[14]={"tp","sl","account_tp","account_sl","price","be","so","symbol_profit","current_profit","balance","equity","used_margin","free_margin","margin"};
+   string money_names[6]={"tp","sl","account_tp","account_sl","symbol_profit","current_profit"};
    string rate_names[2]={"be","so"};
-   int title_width=0,value_width=0,unit_width=0,tail_width=0,money_unit_width=0;
+   int title_width=0,value_width=0,unit_width=0,tail_width=0;
+   int money_unit_width=(int)ObjectGetInteger(0,prefix+"width_currency",OBJPROP_XSIZE);
    int ratio_value_width=0,ratio_suffix_width=0;
    int rate_value_width=0,rate_middle_width=0,rate_pips_width=0;
-   for(int i=0;i<11;i++)
+   for(int i=0;i<14;i++)
    {
       string name=prefix+names[i];
       if(ObjectFind(0,name)<0) continue;
       title_width=(int)MathMax(title_width,ObjectGetInteger(0,name,OBJPROP_XSIZE));
       value_width=(int)MathMax(value_width,ObjectGetInteger(0,name+"_value",OBJPROP_XSIZE));
-      if(ObjectFind(0,name+"_note")>=0)
+      bool money_row=(names[i]=="tp" || names[i]=="sl" || names[i]=="account_tp" ||
+                      names[i]=="account_sl" || names[i]=="symbol_profit" ||
+                      names[i]=="current_profit");
+      if(!money_row && ObjectFind(0,name+"_note")>=0)
          unit_width=(int)MathMax(unit_width,ObjectGetInteger(0,name+"_note",OBJPROP_XSIZE));
       if(ObjectFind(0,name+"_tail")>=0)
          tail_width=(int)MathMax(tail_width,ObjectGetInteger(0,name+"_tail",OBJPROP_XSIZE));
    }
-   for(int i=0;i<3;i++)
+   for(int i=0;i<6;i++)
    {
       string name=prefix+money_names[i];
-      if(ObjectFind(0,name+"_note")>=0)
-         money_unit_width=(int)MathMax(money_unit_width,ObjectGetInteger(0,name+"_note",OBJPROP_XSIZE));
       string base=name+"_ratio";
       if(ObjectFind(0,base+"_value")>=0)
       {
@@ -463,7 +632,7 @@ void AlignDetailRows()
    bool bottom=(InpCorner==CORNER_LEFT_LOWER || InpCorner==CORNER_RIGHT_LOWER);
    ENUM_ANCHOR_POINT left_anchor=bottom ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER;
    ENUM_ANCHOR_POINT right_anchor=bottom ? ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER;
-   int generic_width=unit_width+(tail_width>0 ? gap+tail_width : 0);
+   int generic_width=(int)MathMax(unit_width,money_unit_width)+(tail_width>0 ? gap+tail_width : 0);
    if(ObjectFind(0,prefix+"margin_tail")>=0)
    {
       int margin_tail_width=(int)ObjectGetInteger(0,prefix+"margin_tail",OBJPROP_XSIZE);
@@ -474,12 +643,16 @@ void AlignDetailRows()
    int suffix_width=(int)MathMax(generic_width,MathMax(ratio_width,rate_width));
    int width=title_width+gap+value_width+(suffix_width>0 ? gap+suffix_width : 0);
    int origin=(int)MathMax(0,InpX)+(right ? width : 0);
-   int numeric_end=origin+(right ? -1 : 1)*(title_width+gap+value_width);
-   int note_start=numeric_end+(right ? -gap : gap);
    int direction=(right ? -1 : 1);
+   // Bring the main values closer to the auxiliary column without moving the
+   // aligned percent, pips and rate-difference annotations.
+   const int value_shift=20;
+   int numeric_end=origin+direction*(title_width+gap+value_width+value_shift);
+   int note_start=numeric_end+direction*gap;
+   int annotation_start=note_start+direction*(money_unit_width+gap-value_shift);
    if(ObjectFind(0,prefix+"header")>=0)
       ObjectSetInteger(0,prefix+"header",OBJPROP_XDISTANCE,(int)MathMax(0,InpX));
-   for(int i=0;i<11;i++)
+   for(int i=0;i<14;i++)
    {
       string name=prefix+names[i];
       if(ObjectFind(0,name)<0) continue;
@@ -498,14 +671,17 @@ void AlignDetailRows()
          int own_unit_width=(ObjectFind(0,name+"_note")>=0 ? (int)ObjectGetInteger(0,name+"_note",OBJPROP_XSIZE) : 0);
          int tail_start=note_start+direction*(own_unit_width+gap);
          if(names[i]=="margin")
-            tail_start=note_start+direction*(money_unit_width+gap);
+            tail_start=annotation_start+direction*24;
          ObjectSetInteger(0,name+"_tail",OBJPROP_XDISTANCE,tail_start);
       }
    }
    {
-      int ratio_start=note_start+direction*(money_unit_width+gap);
-      int ratio_end=ratio_start+direction*annotation_value_width;
-      for(int i=0;i<3;i++)
+      int ratio_start=annotation_start;
+      // Percent values need a little more room on their right; keep the pips
+      // and four-digit rate-difference columns at their existing positions.
+      const int ratio_shift=14;
+      int ratio_end=ratio_start+direction*(annotation_value_width+ratio_shift);
+      for(int i=0;i<6;i++)
       {
          string base=prefix+money_names[i]+"_ratio";
          if(ObjectFind(0,base+"_value")<0) continue;
@@ -514,8 +690,34 @@ void AlignDetailRows()
          ObjectSetInteger(0,base+"_suffix",OBJPROP_ANCHOR,left_anchor);
          ObjectSetInteger(0,base+"_suffix",OBJPROP_XDISTANCE,ratio_end);
       }
-      int rate_value_end=ratio_end;
-      int rate_pips_end=rate_value_end+direction*(rate_middle_width+rate_pips_width);
+      string warning_names[4]={"tp_missing","sl_missing","account_tp_missing","account_sl_missing"};
+      for(int i=0;i<4;i++)
+      {
+         string name=prefix+warning_names[i];
+         if(ObjectFind(0,name)<0) continue;
+         ObjectSetInteger(0,name,OBJPROP_ANCHOR,left_anchor);
+         ObjectSetInteger(0,name,OBJPROP_XDISTANCE,ratio_start);
+      }
+      int rate_value_end=ratio_end-direction*ratio_shift;
+      int widest_rate_text=0;
+      for(int i=0;i<2;i++)
+      {
+         string value_name=prefix+rate_names[i]+"_rate_pips";
+         if(ObjectFind(0,value_name)>=0)
+            widest_rate_text=(int)MathMax(widest_rate_text,
+                                        ObjectGetInteger(0,value_name,OBJPROP_XSIZE));
+      }
+      // Use empty space inside the four-digit reserve to bring the rightmost
+      // values closer to pips; restore the space as the numbers grow.
+      int rate_shift=(int)MathMin(24,MathMax(0,rate_pips_width-widest_rate_text-6));
+      // Integer-priced symbols need their pips/rate pair closer to the percent
+      // column. Keep at least six pixels inside the chart's right edge.
+      if(SymbolInfoInteger(_Symbol,SYMBOL_DIGITS)==0)
+      {
+         int integer_shift=(int)MathMin(14,right ? MathMax(0,InpX+rate_shift-6) : 14);
+         rate_value_end+=direction*integer_shift;
+      }
+      int rate_pips_end=rate_value_end+direction*(rate_middle_width+rate_pips_width-rate_shift);
       for(int i=0;i<2;i++)
       {
          string base=prefix+rate_names[i]+"_rate";
@@ -528,6 +730,9 @@ void AlignDetailRows()
          ObjectSetInteger(0,base+"_pips",OBJPROP_XDISTANCE,rate_pips_end);
       }
    }
+   int header_width=ObjectFind(0,prefix+"header")>=0 ?
+                    (int)ObjectGetInteger(0,prefix+"header",OBJPROP_XSIZE) : 0;
+   FitBackground((int)MathMax(width,header_width)+(int)MathMax(0,InpX)+20);
 }
 // Solve a linear price scenario; explicitly reject a flat hedge and negative prices.
 bool SolveRate(const double base,const double slope,const double current_value,
@@ -540,7 +745,56 @@ bool SolveRate(const double base,const double slope,const double current_value,
    price=result;
    return true;
 }
-void RefreshRates(const int first_row)
+// For a Forex pair whose base is the account currency, convert each position's
+// quote-currency P/L at the hypothetical close. Keep the current spread fixed.
+// Positive quote P/L buys account currency at Ask; a loss sells it at Bid.
+bool FxGrossAt(const double rate,const double spread,const bool ask_basis,
+               const double &entries[],const double &quantities[],const bool &buys[],
+               const int count,double &gross)
+{
+   double bid=ask_basis ? rate-spread : rate;
+   double ask=bid+spread;
+   if(bid<=0 || ask<=0) return false;
+   gross=0;
+   for(int i=0;i<count;i++)
+   {
+      double exit_price=buys[i] ? bid : ask;
+      double quote_profit=(buys[i] ? exit_price-entries[i] : entries[i]-exit_price)*quantities[i];
+      gross+=quote_profit/(quote_profit>=0 ? ask : bid);
+   }
+   return MathIsValidNumber(gross);
+}
+// A single-direction Forex book is monotone in price under this model.
+bool SolveFxRate(const double base,const double spread,const bool ask_basis,
+                 const double &entries[],const double &quantities[],const bool &buys[],
+                 const int count,const double target,double &price)
+{
+   price=EMPTY_VALUE;
+   if(count<=0) return false;
+   double low=(ask_basis ? spread : 0)+1e-8;
+   double high=MathMax(base*2,base+1);
+   double at_low,at_high;
+   if(!FxGrossAt(low,spread,ask_basis,entries,quantities,buys,count,at_low) ||
+      !FxGrossAt(high,spread,ask_basis,entries,quantities,buys,count,at_high)) return false;
+   for(int i=0;i<32 && (target<MathMin(at_low,at_high) || target>MathMax(at_low,at_high));i++)
+   {
+      high*=2;
+      if(!FxGrossAt(high,spread,ask_basis,entries,quantities,buys,count,at_high)) return false;
+   }
+   if(target<MathMin(at_low,at_high) || target>MathMax(at_low,at_high)) return false;
+   bool increasing=at_high>at_low;
+   for(int i=0;i<48;i++)
+   {
+      double mid=(low+high)*0.5;
+      double at_mid;
+      if(!FxGrossAt(mid,spread,ask_basis,entries,quantities,buys,count,at_mid)) return false;
+      if((at_mid<target)==increasing) low=mid;
+      else high=mid;
+   }
+   price=(low+high)*0.5;
+   return MathIsValidNumber(price) && price>0;
+}
+void RefreshRates(const int first_row,const double symbol_current_profit)
 {
    break_even=EMPTY_VALUE; stop_out=EMPTY_VALUE; margin_level=EMPTY_VALUE;
    double balance=AccountInfoDouble(ACCOUNT_BALANCE);
@@ -580,6 +834,16 @@ void RefreshRates(const int first_row)
       int count=0,buys=0,sells=0;
       double slope=0,gross_bid=0,swaps=0,fees=0,current_profit=0;
       int n=PositionsTotal();
+      double entries[],quantities[];
+      bool directions[];
+      ArrayResize(entries,n);
+      ArrayResize(quantities,n);
+      ArrayResize(directions,n);
+      ENUM_SYMBOL_CALC_MODE calc_mode=(ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_CALC_MODE);
+      string profit_currency=SymbolInfoString(_Symbol,SYMBOL_CURRENCY_PROFIT);
+      bool direct_fx=(calc_mode==SYMBOL_CALC_MODE_FOREX || calc_mode==SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE) &&
+                     SymbolInfoString(_Symbol,SYMBOL_CURRENCY_BASE)==account_currency &&
+                     profit_currency!=account_currency;
       for(int i=0;i<n;i++)
       {
          if(PositionGetTicket(i)==0) { ok=false; continue; }
@@ -588,22 +852,24 @@ void RefreshRates(const int first_row)
          bool buy=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
          if(buy) buys++; else sells++;
          double contract=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_CONTRACT_SIZE);
-         ENUM_SYMBOL_CALC_MODE mode=(ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_CALC_MODE);
-         // This root solver is exact only for fixed-conversion linear contracts.
-         // Unsupported/nonlinear contracts are shown as unavailable, never a guessed rate.
-         if(!LinearMode(mode) || contract<=0 ||
-            SymbolInfoString(_Symbol,SYMBOL_CURRENCY_PROFIT)!=account_currency) ok=false;
+         if(!LinearMode(calc_mode) || contract<=0 ||
+            (profit_currency!=account_currency && !direct_fx)) ok=false;
          double lots=PositionGetDouble(POSITION_VOLUME);
          double quantity=lots*contract;
          double direction=(buy ? 1.0 : -1.0);
          double exit_price=(buy ? quote.bid : quote.ask);
-         gross_bid+=direction*(exit_price-PositionGetDouble(POSITION_PRICE_OPEN))*quantity;
+         entries[count-1]=PositionGetDouble(POSITION_PRICE_OPEN);
+         quantities[count-1]=quantity;
+         directions[count-1]=buy;
+         gross_bid+=direction*(exit_price-entries[count-1])*quantity;
          slope+=direction*quantity;
          swaps+=PositionGetDouble(POSITION_SWAP);
          current_profit+=PositionGetDouble(POSITION_PROFIT);
          fees+=InpExitCommissionPerLot*lots;
       }
       if(PositionsTotal()!=n) ok=false;
+      // Mixed-direction conversion has a more complex P/L curve; keep it unavailable.
+      if(direct_fx && buys>0 && sells>0) ok=false;
       bool ask_basis=(sells>0 && buys==0);
       double base=(ask_basis ? quote.ask : quote.bid);
       int digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);
@@ -618,10 +884,17 @@ void RefreshRates(const int first_row)
       }
       else
       {
+         double fx_gross=0;
+         bool fx_ready=!direct_fx || FxGrossAt(base,quote.ask-quote.bid,ask_basis,
+                                               entries,quantities,directions,count,fx_gross);
          double net=gross_bid+(InpIncludeSwap ? swaps : 0)-fees;
-         if(SolveRate(base,slope,net,0,break_even))
-            be_text+=Grouped(break_even,digits);
-         else be_text+="正の価格に該当なし";
+         bool be_found=direct_fx ?
+            (fx_ready && SolveFxRate(base,quote.ask-quote.bid,ask_basis,entries,quantities,
+                                     directions,count,fees-(InpIncludeSwap ? swaps : 0),break_even)) :
+            SolveRate(base,slope,net,0,break_even);
+         if(be_found)
+            be_text+=Grouped(break_even,digits)+(direct_fx ? " 概算" : "");
+         else be_text+=(fx_ready ? "正の価格に該当なし" : "計算不可");
          if(margin<=0) so_text+="証拠金なし";
          else if(!stop_valid) so_text+="基準取得不可";
          else if(stop_reached) so_text+="強制決済基準以下";
@@ -630,12 +903,18 @@ void RefreshRates(const int first_row)
             // Replace only this symbol's sampled floating P/L with the quote-based model.
             // Account equity already includes all accrued swaps; do not add them twice.
             double modeled_equity=equity-current_profit+gross_bid;
-            if(SolveRate(base,slope,modeled_equity,
-                         ThresholdEquity(stop_percent,margin,active_stop),stop_out))
+            bool so_found=direct_fx ?
+               (fx_ready && SolveFxRate(base,quote.ask-quote.bid,ask_basis,entries,quantities,
+                                        directions,count,
+                                        fx_gross+ThresholdEquity(stop_percent,margin,active_stop)-equity,
+                                        stop_out)) :
+               SolveRate(base,slope,modeled_equity,
+                         ThresholdEquity(stop_percent,margin,active_stop),stop_out);
+            if(so_found)
             {
-               so_text+=Grouped(stop_out,digits);
+               so_text+=Grouped(stop_out,digits)+(direct_fx ? " 概算" : "");
             }
-            else so_text+="正の価格に該当なし";
+            else so_text+=(fx_ready ? "正の価格に該当なし" : "計算不可");
          }
       }
       if(!InpCurrentSymbolOnly) { be_text+=" ("+_Symbol+")"; so_text+=" ("+_Symbol+")"; }
@@ -650,12 +929,18 @@ void RefreshRates(const int first_row)
    int profit_row=first_row+(InpShowRates ? 3 : 0);
    if(InpShowCurrentProfit)
    {
+      color symbol_colour=symbol_current_profit>0 ? InpCurrentProfitColor :
+                           (symbol_current_profit<0 ? InpCurrentLossColor : InpInfoColor);
+      DetailRow("symbol_profit","現在損益(銘柄)",
+                Money(symbol_current_profit,account_currency,InpDecimals),profit_row,symbol_colour);
+      SetRatioAnnotation("symbol_profit",symbol_current_profit,balance,profit_row,symbol_colour);
       color profit_colour=current_profit>0 ? InpCurrentProfitColor :
                            (current_profit<0 ? InpCurrentLossColor : InpInfoColor);
-      DetailRow("current_profit","現在損益",Money(current_profit,account_currency,InpDecimals),profit_row,profit_colour);
-      SetRatioAnnotation("current_profit",current_profit,balance,profit_row,profit_colour);
+      DetailRow("current_profit","現在損益(口座)",
+                Money(current_profit,account_currency,InpDecimals),profit_row+1,profit_colour);
+      SetRatioAnnotation("current_profit",current_profit,balance,profit_row+1,profit_colour);
    }
-   int account_row=profit_row+(InpShowCurrentProfit ? 1 : 0);
+   int account_row=profit_row+(InpShowCurrentProfit ? 2 : 0);
    if(InpShowAccountDetails)
    {
       DetailRow("balance","残高",(balance<0 ? "-" : "")+Grouped(balance,InpDecimals)+" "+account_currency,account_row,InpInfoColor);
@@ -670,12 +955,18 @@ void RefreshRates(const int first_row)
       if(manual_stop) text+=" 手動";
       color margin_colour=call_reached ? InpMarginCallColor :
                           (margin_warning ? InpMarginWarningColor : InpInfoColor);
-      DetailRow("margin","維持率",text,account_row+(InpShowAccountDetails ? 4 : 0),margin_colour);
+      DetailRow("margin","証拠金維持率",text,account_row+(InpShowAccountDetails ? 4 : 0),margin_colour);
    }
    uint now=GetTickCount();
-   if(layout_dirty && (last_layout_tick==0 || now-last_layout_tick>=100))
+   if(!monitor_hidden && layout_dirty && (last_layout_tick==0 || now-last_layout_tick>=100))
    {
-      if(LabelWidthsReady())
+      if(!layout_measure_requested)
+      {
+         // Let MT5 paint updated text before reading OBJPROP_XSIZE.
+         ChartRedraw(0);
+         layout_measure_requested=true;
+      }
+      else if(LabelWidthsReady())
       {
          AlignDetailRows();
          layout_dirty=false;
@@ -686,47 +977,77 @@ void RefreshRates(const int first_row)
             Print("Position Monitor layout ready");
          }
       }
-      else if(!layout_measure_requested)
-      {
-         // One paint while labels are off-screen provides their real pixel widths.
-         ChartRedraw(0);
-         layout_measure_requested=true;
-      }
       last_layout_tick=now;
    }
 }
 void Refresh()
 {
    total_tp=0; total_sl=0; total_positions=0;
+   account_tp=0; account_sl=0; account_positions=0;
    double total_lots=0;
+   double symbol_current_profit=0;
    int missing_tp=0,missing_sl=0,error_tp=0,error_sl=0;
+   int account_missing_tp=0,account_missing_sl=0,account_error_tp=0,account_error_sl=0;
    bool snapshot_failed=false;
    int n=PositionsTotal();
    for(int i=0;i<n;i++)
    {
       if(PositionGetTicket(i)==0) { snapshot_failed=true; continue; }
       string symbol=PositionGetString(POSITION_SYMBOL);
-      if(InpCurrentSymbolOnly && symbol!=_Symbol) continue;
-      total_positions++;
+      bool selected=!InpCurrentSymbolOnly || symbol==_Symbol;
+      if(symbol==_Symbol) symbol_current_profit+=PositionGetDouble(POSITION_PROFIT);
+      account_positions++;
+      if(!selected && !InpShowAccountTotals) continue;
+      if(selected) total_positions++;
       bool buy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
       double lots=PositionGetDouble(POSITION_VOLUME);
-      total_lots+=lots;
+      if(selected) total_lots+=lots;
       double entry=PositionGetDouble(POSITION_PRICE_OPEN);
       double tp=PositionGetDouble(POSITION_TP),sl=PositionGetDouble(POSITION_SL);
       double costs=(InpIncludeSwap ? PositionGetDouble(POSITION_SWAP) : 0)
                    -InpExitCommissionPerLot*lots;
       double result;
-      if(tp<=0) missing_tp++;
-      else if(Estimate(symbol,buy,lots,entry,tp,result)) total_tp+=result+costs;
-      else error_tp++;
-      if(sl<=0) missing_sl++;
-      else if(Estimate(symbol,buy,lots,entry,sl,result)) total_sl+=result+costs;
-      else error_sl++;
+      if(tp<=0)
+      {
+         account_missing_tp++;
+         if(selected) missing_tp++;
+      }
+      else if(Estimate(symbol,buy,lots,entry,tp,result))
+      {
+         account_tp+=result+costs;
+         if(selected) total_tp+=result+costs;
+      }
+      else
+      {
+         account_error_tp++;
+         if(selected) error_tp++;
+      }
+      if(sl<=0)
+      {
+         account_missing_sl++;
+         if(selected) missing_sl++;
+      }
+      else if(Estimate(symbol,buy,lots,entry,sl,result))
+      {
+         account_sl+=result+costs;
+         if(selected) total_sl+=result+costs;
+      }
+      else
+      {
+         account_error_sl++;
+         if(selected) error_sl++;
+      }
    }
    if(PositionsTotal()!=n) snapshot_failed=true;
-   if(snapshot_failed) { error_tp++; error_sl++; }
+   if(snapshot_failed)
+   {
+      error_tp++; error_sl++;
+      account_error_tp++; account_error_sl++;
+   }
    valid_tp=(error_tp==0 && missing_tp==0);
    valid_sl=(error_sl==0 && missing_sl==0);
+   valid_account_tp=(account_error_tp==0 && account_missing_tp==0);
+   valid_account_sl=(account_error_sl==0 && account_missing_sl==0);
    if(InpShowHeader)
    {
       string header=(InpCurrentSymbolOnly ? _Symbol : "全銘柄")+" | "+
@@ -736,8 +1057,10 @@ void Refresh()
       PutLabel("header",header,0,InpInfoColor,InpFontSize);
    }
    int offset=InpShowHeader ? 1 : 0;
-   MoneyRows(offset,missing_tp,error_tp,missing_sl,error_sl);
-   RefreshRates(offset+2);
+   MoneyRows(offset,missing_tp,error_tp,missing_sl,error_sl,
+             account_missing_tp,account_error_tp,account_missing_sl,account_error_sl);
+   RefreshRates(offset+2+(InpCurrentSymbolOnly && InpShowAccountTotals ? 2 : 0),
+                symbol_current_profit);
    PublishBuffers();
 }
 bool SelfTest()
@@ -770,6 +1093,22 @@ bool SelfTest()
    if(!SolveRate(100,2,20,0,rate) || MathAbs(rate-90)>1e-7) return false;
    if(SolveRate(100,0,20,0,rate)) return false;
    if(SolveRate(100,1,200,0,rate)) return false;
+   double fx_entries[1]={150.0},fx_quantities[1]={100000.0};
+   bool fx_buys[1]={true};
+   double fx_gross;
+   if(!FxGrossAt(150.0,0.006,false,fx_entries,fx_quantities,fx_buys,1,fx_gross) ||
+      MathAbs(fx_gross)>1e-8) return false;
+   if(!SolveFxRate(149.0,0.006,false,fx_entries,fx_quantities,fx_buys,1,0,rate) ||
+      MathAbs(rate-150.0)>1e-7) return false;
+   if(!FxGrossAt(151.0,0.006,false,fx_entries,fx_quantities,fx_buys,1,fx_gross) ||
+      MathAbs(fx_gross-100000.0/151.006)>1e-7) return false;
+   if(!SolveFxRate(149.0,0.006,false,fx_entries,fx_quantities,fx_buys,1,fx_gross,rate) ||
+      MathAbs(rate-151.0)>1e-7) return false;
+   fx_buys[0]=false;
+   if(!FxGrossAt(149.0,0.006,true,fx_entries,fx_quantities,fx_buys,1,fx_gross) ||
+      MathAbs(fx_gross-100000.0/149.0)>1e-7) return false;
+   if(!SolveFxRate(150.0,0.006,true,fx_entries,fx_quantities,fx_buys,1,fx_gross,rate) ||
+      MathAbs(rate-149.0)>1e-7) return false;
    string tp_text=PadAmount(Money(18813,"USD",2),20);
    string sl_text=PadAmount(Money(-2187,"USD",2),20);
    if(StringLen(tp_text)!=20 || StringLen(sl_text)!=20 ||
@@ -785,7 +1124,8 @@ int OnInit()
 {
    if(InpFontSize<8 || InpFontSize>72 || InpDecimals<0 || InpDecimals>8 ||
       InpRowSpacing<0 || InpExitCommissionPerLot<0 || InpStopOutPercent<0 ||
-      InpMarginWarningPercent<=0 || !SelfTest())
+      InpMarginWarningPercent<=0 || InpTrialTP<0 || InpTrialSL<0 ||
+      InpScenarioX<0 || InpScenarioY<0 || !SelfTest() || !ScenarioSelfTest())
       return INIT_PARAMETERS_INCORRECT;
    SetIndexBuffer(0,TPBuffer,INDICATOR_DATA);
    SetIndexBuffer(1,SLBuffer,INDICATOR_DATA);
@@ -806,16 +1146,35 @@ int OnInit()
    account_currency=AccountInfoString(ACCOUNT_CURRENCY);
    prefix="PositionMonitor_"+IntegerToString(ChartID())+"_";
    ObjectsDeleteAll(0,prefix);
+   ObjectsDeleteAll(0,ScenarioPrefix());
    last_layout_tick=0;
    layout_dirty=true;
    layout_visible=false;
    layout_measure_requested=false;
+   monitor_hidden=false;
+   scenario_hidden=(InpTrialTP<=0 && InpTrialSL<=0);
+   scenario_position_key="";
+   last_scenario_check=0;
+   max_background_width=0;
+   CreateBackground();
+   CreateToggleButton("monitor",95);
+   CreateToggleButton("scenario",181);
+   SetToggleText("scenario",scenario_hidden);
    CreateFourDigitWidthSamples();
    if(!EventSetMillisecondTimer(100)) return INIT_FAILED;
    Refresh();
+   if(!scenario_hidden)
+   {
+      ScenarioRun();
+      scenario_position_key=ScenarioPositionKey();
+   }
    PrintFormat("Read-only initialized. Positions=%d TP=%s SL=%s SelfTest=PASS",
                total_positions,valid_tp ? Money(total_tp,account_currency,InpDecimals) : "incomplete",
                valid_sl ? Money(total_sl,account_currency,InpDecimals) : "incomplete");
+   PrintFormat("Account TP/SL totals. Positions=%d TP=%s SL=%s",
+               account_positions,
+               valid_account_tp ? Money(account_tp,account_currency,InpDecimals) : "incomplete",
+               valid_account_sl ? Money(account_sl,account_currency,InpDecimals) : "incomplete");
    PrintFormat("Margin thresholds. Mode=%d Call=%.4f StopOut=%.4f Override=%.4f",
                (int)AccountInfoInteger(ACCOUNT_MARGIN_SO_MODE),
                AccountInfoDouble(ACCOUNT_MARGIN_SO_CALL),AccountInfoDouble(ACCOUNT_MARGIN_SO_SO),
@@ -825,10 +1184,67 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   if(prefix!="") ObjectsDeleteAll(0,prefix);
+   if(prefix!="")
+   {
+      int buttons=ObjectsDeleteAll(0,prefix+"toggle_",0,OBJ_BUTTON);
+      int scenario_objects=ObjectsDeleteAll(0,ScenarioPrefix());
+      int monitor_objects=ObjectsDeleteAll(0,prefix);
+      PrintFormat("PositionMonitor cleanup: reason=%d buttons=%d scenario=%d monitor=%d",
+                  reason,buttons,scenario_objects,monitor_objects);
+   }
    ChartRedraw(0);
 }
-void OnTimer() { Refresh(); }
+void OnTimer()
+{
+   Refresh();
+   if(!scenario_hidden)
+   {
+      uint now=GetTickCount();
+      if(last_scenario_check==0 || now-last_scenario_check>=1000)
+      {
+         last_scenario_check=now;
+         string current_key=ScenarioPositionKey();
+         if(current_key=="unavailable") return;
+         if(current_key!=scenario_position_key ||
+            (ObjectFind(0,ScenarioPrefix()+"background")<0 &&
+             ObjectFind(0,ScenarioPrefix()+"message")<0))
+         {
+            ScenarioRun();
+            scenario_position_key=current_key;
+         }
+         else ScenarioRefreshCurrent();
+      }
+   }
+}
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id!=CHARTEVENT_OBJECT_CLICK) return;
+   if(sparam==prefix+"toggle_monitor")
+   {
+      monitor_hidden=!monitor_hidden;
+      SetPanelVisibility(prefix,monitor_hidden);
+      SetToggleText("monitor",monitor_hidden);
+      if(!monitor_hidden)
+      {
+         layout_dirty=true;
+         layout_measure_requested=false;
+      }
+   }
+   else if(sparam==prefix+"toggle_scenario")
+   {
+      scenario_hidden=!scenario_hidden;
+      if(scenario_hidden) SetPanelVisibility(ScenarioPrefix(),true);
+      else
+      {
+         ScenarioRun();
+         scenario_position_key=ScenarioPositionKey();
+         last_scenario_check=GetTickCount();
+      }
+      SetToggleText("scenario",scenario_hidden);
+   }
+   else return;
+   ChartRedraw(0);
+}
 int OnCalculate(const int rates_total,const int prev_calculated,const datetime &time[],
                 const double &open[],const double &high[],const double &low[],const double &close[],
                 const long &tick_volume[],const long &volume[],const int &spread[])
