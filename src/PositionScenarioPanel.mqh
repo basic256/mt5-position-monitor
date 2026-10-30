@@ -1,6 +1,7 @@
 // PositionScenario calculations and panel owned by PositionMonitor. No trade operations.
-#define SCENARIO_PANEL_WIDTH 665
+#define SCENARIO_PANEL_WIDTH 585
 bool scenario_panel_hidden=false;
+string scenario_label_names[];
 
 struct ScenarioPositionSnapshot
 {
@@ -50,7 +51,13 @@ string ScenarioSignedMoney(const double value,const string currency)
 
 color ScenarioAmountColor(const double amount)
 {
-   return amount>0 ? clrLimeGreen : (amount<0 ? clrTomato : clrWhite);
+   return amount>0 ? clrLimeGreen : (amount<0 ? clrRed : clrWhite);
+}
+
+color ScenarioResultColor(const double amount,const bool valid,const string status)
+{
+   if(valid) return ScenarioAmountColor(amount);
+   return status=="未設定あり" ? clrYellow : (status=="未試算" ? clrWhite : clrOrange);
 }
 
 bool ScenarioProfitAt(const ScenarioPositionSnapshot &position,const double exit_price,double &result)
@@ -66,7 +73,8 @@ bool ScenarioProfitAt(const ScenarioPositionSnapshot &position,const double exit
 
 bool ScenarioSnapshot(ScenarioPositionSnapshot &positions[],int &count,double &account_current,
               double &symbol_current,
-              double &other_tp,double &other_sl,bool &other_tp_ok,bool &other_sl_ok)
+              double &other_tp,double &other_sl,bool &other_tp_ok,bool &other_sl_ok,
+              bool &other_tp_missing,bool &other_sl_missing)
 {
    count=0;
    account_current=0;
@@ -75,6 +83,8 @@ bool ScenarioSnapshot(ScenarioPositionSnapshot &positions[],int &count,double &a
    other_sl=0;
    other_tp_ok=true;
    other_sl_ok=true;
+   other_tp_missing=false;
+   other_sl_missing=false;
    int before=PositionsTotal();
    ArrayResize(positions,before);
    for(int i=0;i<before;i++)
@@ -84,7 +94,7 @@ bool ScenarioSnapshot(ScenarioPositionSnapshot &positions[],int &count,double &a
       double live=PositionGetDouble(POSITION_PROFIT);
       if(!MathIsValidNumber(live)) return false;
       string symbol=PositionGetString(POSITION_SYMBOL);
-      if(symbol==_Symbol) symbol_current+=live;
+      if(symbol==_Symbol) symbol_current+=live+PositionGetDouble(POSITION_SWAP);
       if(symbol!=_Symbol)
       {
          ScenarioPositionSnapshot other;
@@ -95,6 +105,8 @@ bool ScenarioSnapshot(ScenarioPositionSnapshot &positions[],int &count,double &a
          other.swap=PositionGetDouble(POSITION_SWAP);
          other.tp=PositionGetDouble(POSITION_TP);
          other.sl=PositionGetDouble(POSITION_SL);
+         if(other.tp<=0) other_tp_missing=true;
+         if(other.sl<=0) other_sl_missing=true;
          double outcome;
          if(other.tp>0 && ScenarioProfitAt(other,other.tp,outcome)) other_tp+=outcome;
          else other_tp_ok=false;
@@ -167,6 +179,17 @@ bool ScenarioSumCase(ScenarioPositionSnapshot &positions[],const int count,bool 
    return true;
 }
 
+bool ScenarioHasUnsetExit(ScenarioPositionSnapshot &positions[],const int count,
+                          bool &selected[],const bool tp,const int mode)
+{
+   for(int i=0;i<count;i++)
+   {
+      bool use_trial=(mode==1 || (mode==2 && selected[i]));
+      if(!use_trial && (tp ? positions[i].tp<=0 : positions[i].sl<=0)) return true;
+   }
+   return false;
+}
+
 bool ScenarioSelfTest()
 {
    ScenarioPositionSnapshot sample[];
@@ -200,6 +223,9 @@ void ScenarioLabel(const string key,const string message,const int x,const int y
 {
    string name=ScenarioPanelPrefix()+key;
    if(!ObjectCreate(0,name,OBJ_LABEL,0,0,0)) return;
+   int index=ArraySize(scenario_label_names);
+   ArrayResize(scenario_label_names,index+1);
+   scenario_label_names[index]=name;
    ObjectSetString(0,name,OBJPROP_TEXT,message);
    ObjectSetString(0,name,OBJPROP_FONT,"Meiryo");
    ObjectSetInteger(0,name,OBJPROP_CORNER,InpScenarioAlignRight ? CORNER_RIGHT_UPPER : CORNER_LEFT_UPPER);
@@ -214,35 +240,42 @@ void ScenarioLabel(const string key,const string message,const int x,const int y
 }
 
 void ScenarioCell(const string key,const double value,const bool valid,const string currency,
-          const int right_distance,const int y,const color fixed_color=clrNONE)
+          const int right_distance,const int y,const string invalid_text)
 {
-   ScenarioLabel(key,valid ? ScenarioSignedMoney(value,currency) : "算出不可",right_distance,y,
-         valid ? (fixed_color==clrNONE ? ScenarioAmountColor(value) : fixed_color) : clrOrange,
-         InpFontSize,true);
+   ScenarioLabel(key,valid ? ScenarioSignedMoney(value,currency) :
+         (invalid_text=="未試算" ? "0 "+currency : invalid_text),right_distance,y,
+         ScenarioResultColor(value,valid,invalid_text),InpFontSize,true);
 }
 
 void ScenarioDeltaCell(const string key,const double scenario,const bool scenario_ok,
                const double current,const bool current_ok,const string currency,
-               const int right_distance,const int y,const color fixed_color=clrNONE)
+               const int right_distance,const int y,const bool trial_set)
 {
+   if(!trial_set)
+   {
+      ScenarioLabel(key,"0 "+currency,right_distance,y,clrWhite,InpFontSize,true);
+      return;
+   }
    if(!scenario_ok || !current_ok)
    {
-      ScenarioLabel(key,"差額 ―",right_distance,y,clrSilver,InpFontSize-1,true);
+      ScenarioLabel(key,"―",right_distance,y,clrWhite,InpFontSize,true);
       return;
    }
    double difference=scenario-current;
-   ScenarioLabel(key,"差額 "+ScenarioSignedMoney(difference,currency),right_distance,y,
-         fixed_color==clrNONE ? ScenarioAmountColor(difference) : fixed_color,InpFontSize-1,true);
+   ScenarioLabel(key,ScenarioSignedMoney(difference,currency),right_distance,y,
+         ScenarioAmountColor(difference),InpFontSize,true);
 }
 
 void ScenarioRender(const int count,const bool ranking_ok,
+            const double all_lots,const double half_lots,
             const double &values[][3],const bool &valid[][3],
+            const string &status[][3],const bool other_tp_missing,const bool other_sl_missing,
             const double account_current,const double symbol_current,
             const double other_tp,const double other_sl,
             const bool other_tp_ok,const bool other_sl_ok,const string currency)
 {
    const int width=SCENARIO_PANEL_WIDTH;
-   const int height=362;
+   const int height=342;
    string panel=ScenarioPanelPrefix()+"background";
    if(ObjectCreate(0,panel,OBJ_RECTANGLE_LABEL,0,0,0))
    {
@@ -262,64 +295,84 @@ void ScenarioRender(const int count,const bool ranking_ok,
       ObjectSetInteger(0,panel,OBJPROP_TIMEFRAMES,scenario_panel_hidden ? OBJ_NO_PERIODS : OBJ_ALL_PERIODS);
    }
    int left=ScenarioPanelX(16);
-   int condition=ScenarioPanelX(123);
+   int label_end=ScenarioPanelX(123);
+   int trial_value=ScenarioPanelX(165);
    int current=ScenarioPanelX(278);
-   int all=ScenarioPanelX(462);
-   int half=ScenarioPanelX(648);
-   ScenarioLabel("title","Position Scenario  |  "+_Symbol+"  |  "+IntegerToString(count)+"件 / 半数"+
-         IntegerToString(count/2)+"件",left,InpScenarioY+11,clrWhite,InpFontSize+1);
-   ScenarioLabel("timestamp","試算時刻 "+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+
-         "  /  口座通貨 "+currency,left,InpScenarioY+36,clrSilver,InpFontSize-1);
+   int all=ScenarioPanelX(423);
+   int half=ScenarioPanelX(568);
+   ScenarioLabel("title","Position Scenario  |  "+_Symbol+"  |  "+IntegerToString(count)+
+         "ポジション / 変更対象 "+IntegerToString(count/2)+"ポジション",
+         left,InpScenarioY+11,clrWhite,InpFontSize+1);
+   ScenarioLabel("timestamp","試算時刻 "+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+         left,InpScenarioY+36,clrWhite,InpFontSize);
    int digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);
-   ScenarioLabel("planned_label","仮設定",left,InpScenarioY+60,clrWhite,InpFontSize);
-   ScenarioLabel("planned_tp",InpTrialTP>0 ? "TP → "+ScenarioGrouped(InpTrialTP,digits) : "TP → 未入力",
-         ScenarioPanelX(111),InpScenarioY+60,InpTrialTP>0 ? clrLimeGreen : clrOrange,InpFontSize+1);
-   ScenarioLabel("planned_sl",InpTrialSL>0 ? "SL → "+ScenarioGrouped(InpTrialSL,digits) : "SL → 未入力",
-         ScenarioPanelX(336),InpScenarioY+60,InpTrialSL>0 ? clrRed : clrOrange,InpFontSize+1);
-   ScenarioLabel("symbol_current",_Symbol+" 現在損益  "+ScenarioSignedMoney(symbol_current,currency),
-         left,InpScenarioY+84,ScenarioAmountColor(symbol_current),InpFontSize);
-   ScenarioLabel("account_current","口座現在損益  "+ScenarioSignedMoney(account_current,currency),
-         ScenarioPanelX(335),InpScenarioY+84,ScenarioAmountColor(account_current),InpFontSize);
+   ScenarioLabel("planned_tp","TP(変更予定)",label_end,InpScenarioY+60,
+         InpTrialTP>0 ? clrLimeGreen : clrOrange,InpFontSize,true);
+   ScenarioLabel("planned_tp_value",InpTrialTP>0 ? ScenarioGrouped(InpTrialTP,digits) : "未入力",
+         trial_value,InpScenarioY+60,InpTrialTP>0 ? clrLimeGreen : clrOrange,InpFontSize);
+   ScenarioLabel("planned_sl","SL(変更予定)",label_end,InpScenarioY+84,
+         InpTrialSL>0 ? clrRed : clrOrange,InpFontSize,true);
+   ScenarioLabel("planned_sl_value",InpTrialSL>0 ? ScenarioGrouped(InpTrialSL,digits) : "未入力",
+         trial_value,InpScenarioY+84,InpTrialSL>0 ? clrRed : clrOrange,InpFontSize);
+   ScenarioLabel("symbol_current","現在損益(銘柄)",label_end,InpScenarioY+108,
+         ScenarioAmountColor(symbol_current),InpFontSize,true);
+   ScenarioLabel("symbol_current_value",ScenarioSignedMoney(symbol_current,currency),current,
+         InpScenarioY+108,ScenarioAmountColor(symbol_current),InpFontSize,true);
+   ScenarioLabel("account_current","現在損益(口座)",label_end,InpScenarioY+132,
+         ScenarioAmountColor(account_current),InpFontSize,true);
+   ScenarioLabel("account_current_value",ScenarioSignedMoney(account_current,currency),current,
+         InpScenarioY+132,ScenarioAmountColor(account_current),InpFontSize,true);
    ObjectSetString(0,ScenarioPanelPrefix()+"symbol_current",OBJPROP_TOOLTIP,
-                   "チャート銘柄のPOSITION_PROFIT合計。スワップは含みません。");
+                   "チャート銘柄のPOSITION_PROFITと発生済みPOSITION_SWAPの合計です。");
    ObjectSetString(0,ScenarioPanelPrefix()+"account_current",OBJPROP_TOOLTIP,
-                   "口座全体のACCOUNT_PROFIT。スワップは含みません。");
-   ScenarioLabel("h_current","現状",current,InpScenarioY+112,clrWhite,InpFontSize,true);
-   ScenarioLabel("h_all","全件変更",all,InpScenarioY+112,clrWhite,InpFontSize,true);
-   ScenarioLabel("h_half","半数変更",half,InpScenarioY+112,clrWhite,InpFontSize,true);
-   ScenarioLabel("tp_title","TP",condition,InpScenarioY+139,clrLimeGreen,InpFontSize,true);
-   ScenarioLabel("tp_account_title","TP合計(口座)",condition,InpScenarioY+162,clrWhite,InpFontSize-1,true);
-   ScenarioLabel("sl_title","SL",condition,InpScenarioY+215,clrRed,InpFontSize,true);
-   ScenarioLabel("sl_account_title","SL合計(口座)",condition,InpScenarioY+238,clrRed,InpFontSize-1,true);
-   ScenarioCell("tp_now",values[0][0],valid[0][0],currency,current,InpScenarioY+139);
-   ScenarioCell("tp_all",values[0][1],valid[0][1],currency,all,InpScenarioY+139);
-   ScenarioCell("tp_half",values[0][2],valid[0][2],currency,half,InpScenarioY+139);
-   ScenarioCell("tp_account_now",other_tp+values[0][0],other_tp_ok && valid[0][0],currency,current,InpScenarioY+162);
-   ScenarioCell("tp_account_all",other_tp+values[0][1],other_tp_ok && valid[0][1],currency,all,InpScenarioY+162);
-   ScenarioCell("tp_account_half",other_tp+values[0][2],other_tp_ok && valid[0][2],currency,half,InpScenarioY+162);
-   ScenarioDeltaCell("tp_all_delta",values[0][1],valid[0][1],values[0][0],valid[0][0],currency,all,InpScenarioY+185);
-   ScenarioDeltaCell("tp_half_delta",values[0][2],valid[0][2],values[0][0],valid[0][0],currency,half,InpScenarioY+185);
-   ScenarioCell("sl_now",values[1][0],valid[1][0],currency,current,InpScenarioY+215,clrRed);
-   ScenarioCell("sl_all",values[1][1],valid[1][1],currency,all,InpScenarioY+215,clrRed);
-   ScenarioCell("sl_half",values[1][2],valid[1][2],currency,half,InpScenarioY+215,clrRed);
-   ScenarioCell("sl_account_now",other_sl+values[1][0],other_sl_ok && valid[1][0],currency,current,InpScenarioY+238,clrRed);
-   ScenarioCell("sl_account_all",other_sl+values[1][1],other_sl_ok && valid[1][1],currency,all,InpScenarioY+238,clrRed);
-   ScenarioCell("sl_account_half",other_sl+values[1][2],other_sl_ok && valid[1][2],currency,half,InpScenarioY+238,clrRed);
-   ScenarioDeltaCell("sl_all_delta",values[1][1],valid[1][1],values[1][0],valid[1][0],currency,all,InpScenarioY+261,clrRed);
-   ScenarioDeltaCell("sl_half_delta",values[1][2],valid[1][2],values[1][0],valid[1][0],currency,half,InpScenarioY+261,clrRed);
-   string rule=ranking_ok ? "半数は現在TPの見込利益が低い順（奇数件は切り捨て）" :
-                           "半数の選択不可：現在TPが未設定、または損益を計算できません";
-   ScenarioLabel("rule",rule,left,InpScenarioY+289,ranking_ok ? clrSilver : clrOrange,InpFontSize-1);
-   string account_note=(other_tp_ok && other_sl_ok) ?
-      "口座全体: 他銘柄は現在設定のTP/SLで試算" :
-      "他銘柄にTP/SL未設定または計算不可あり: 対象の口座合計は算出不可";
-   ScenarioLabel("account_note",account_note,left,InpScenarioY+311,
-         (other_tp_ok && other_sl_ok) ? clrSilver : clrOrange,InpFontSize-1);
-   string basis=SymbolInfoString(_Symbol,SYMBOL_CURRENCY_PROFIT)==currency ?
-                "仮価格での見積り" : "為替換算は試算時点";
-   ScenarioLabel("note",(InpIncludeSwap ? "TP/SL試算: Swap込" : "TP/SL試算: Swap除外")+
-                "  |  現在損益: Swap除外  |  "+basis+"  |  実際のTP/SLは変更しません",
-         left,InpScenarioY+333,clrSilver,InpFontSize-1);
+                   "口座全体のACCOUNT_PROFIT。この口座では発生済みスワップを反映しています。");
+   ObjectSetString(0,ScenarioPanelPrefix()+"symbol_current_value",OBJPROP_TOOLTIP,
+                   "チャート銘柄のPOSITION_PROFITと発生済みPOSITION_SWAPの合計です。");
+   ObjectSetString(0,ScenarioPanelPrefix()+"account_current_value",OBJPROP_TOOLTIP,
+                   "口座全体のACCOUNT_PROFIT。この口座では発生済みスワップを反映しています。");
+   ScenarioLabel("h_current","現在の損益",current,InpScenarioY+160,clrWhite,InpFontSize,true);
+   ScenarioLabel("h_all","全"+LotsText(all_lots)+" ロット変更",all,InpScenarioY+160,clrWhite,InpFontSize,true);
+   ScenarioLabel("h_half",ranking_ok ? "半数"+LotsText(half_lots)+" ロット変更" : "半数変更不可",
+                 half,InpScenarioY+160,clrWhite,InpFontSize,true);
+   color tp_symbol_color=ScenarioResultColor(values[0][0],valid[0][0],status[0][0]);
+   color sl_symbol_color=ScenarioResultColor(values[1][0],valid[1][0],status[1][0]);
+   color tp_account_color=ScenarioResultColor(other_tp+values[0][0],other_tp_ok && valid[0][0],
+         other_tp_missing ? "未設定あり" : status[0][0]);
+   color sl_account_color=ScenarioResultColor(other_sl+values[1][0],other_sl_ok && valid[1][0],
+         other_sl_missing ? "未設定あり" : status[1][0]);
+   ScenarioLabel("tp_title","TP合計(銘柄)",label_end,InpScenarioY+187,tp_symbol_color,InpFontSize,true);
+   ScenarioLabel("tp_account_title","TP合計(口座)",label_end,InpScenarioY+210,tp_account_color,InpFontSize,true);
+   ScenarioLabel("sl_title","SL合計(銘柄)",label_end,InpScenarioY+263,sl_symbol_color,InpFontSize,true);
+   ScenarioLabel("sl_account_title","SL合計(口座)",label_end,InpScenarioY+286,sl_account_color,InpFontSize,true);
+   for(int kind=0;kind<2;kind++)
+   {
+      bool tp=kind==0;
+      int row=InpScenarioY+(tp ? 187 : 263);
+      ScenarioLabel(tp ? "tp_delta_title" : "sl_delta_title",tp ? "TP差額" : "SL差額",label_end,row+46,
+            clrWhite,InpFontSize,true);
+      string key=tp ? "tp" : "sl";
+      double other=tp ? other_tp : other_sl;
+      bool other_ok=tp ? other_tp_ok : other_sl_ok;
+      bool other_missing=tp ? other_tp_missing : other_sl_missing;
+      bool trial_set=tp ? InpTrialTP>0 : InpTrialSL>0;
+      int columns[3]={current,all,half};
+      string suffixes[3]={"now","all","half"};
+      for(int mode=0;mode<3;mode++)
+      {
+         string invalid=status[kind][mode];
+         string account_invalid=(invalid=="未試算" ? invalid :
+                                 (other_missing ? "未設定あり" : invalid));
+         ScenarioCell(key+"_"+suffixes[mode],values[kind][mode],valid[kind][mode],currency,
+                      columns[mode],row,invalid);
+         ScenarioCell(key+"_account_"+suffixes[mode],other+values[kind][mode],
+                      other_ok && valid[kind][mode],currency,columns[mode],row+23,
+                      account_invalid);
+      }
+      ScenarioDeltaCell(key+"_all_delta",values[kind][1],valid[kind][1],
+                        values[kind][0],valid[kind][0],currency,all,row+46,trial_set);
+      ScenarioDeltaCell(key+"_half_delta",values[kind][2],valid[kind][2],
+                        values[kind][0],valid[kind][0],currency,half,row+46,trial_set);
+   }
    ChartRedraw(0);
 }
 
@@ -334,6 +387,7 @@ void ScenarioRun()
 {
    scenario_panel_hidden=false;
    ObjectsDeleteAll(0,ScenarioPanelPrefix());
+   ArrayResize(scenario_label_names,0);
    if(InpTrialTP<0 || InpTrialSL<0 || InpExitCommissionPerLot<0 ||
       InpFontSize<8 || InpFontSize>72 || InpScenarioX<0 || InpScenarioY<0 || !ScenarioSelfTest())
    {
@@ -344,8 +398,10 @@ void ScenarioRun()
    int count=0;
    double account_current=0,symbol_current=0,other_tp=0,other_sl=0;
    bool other_tp_ok=false,other_sl_ok=false;
+   bool other_tp_missing=false,other_sl_missing=false;
    if(!ScenarioSnapshot(positions,count,account_current,symbol_current,
-                other_tp,other_sl,other_tp_ok,other_sl_ok))
+                other_tp,other_sl,other_tp_ok,other_sl_ok,
+                other_tp_missing,other_sl_missing))
    {
       ScenarioShowMessage("ポジション取得中に状態が変化しました。再実行してください。");
       return;
@@ -357,22 +413,39 @@ void ScenarioRun()
    }
    bool selected[];
    bool ranking_ok=ScenarioSelectHalf(positions,count,selected);
+   double all_lots=0,half_lots=0;
+   for(int i=0;i<count;i++)
+   {
+      all_lots+=positions[i].lots;
+      if(ranking_ok && selected[i]) half_lots+=positions[i].lots;
+   }
    double values[2][3];
    bool valid[2][3];
+   string status[2][3];
+   bool current_tp_missing=false;
+   for(int i=0;i<count;i++)
+      if(positions[i].tp<=0) current_tp_missing=true;
    for(int kind=0;kind<2;kind++)
    {
       bool tp=kind==0;
       for(int mode=0;mode<3;mode++)
       {
+         bool trial_set=tp ? InpTrialTP>0 : InpTrialSL>0;
+         bool missing=ScenarioHasUnsetExit(positions,count,selected,tp,
+                                            (mode==2 && !ranking_ok) ? 0 : mode);
+         if(mode==2 && !ranking_ok && current_tp_missing) missing=true;
+         status[kind][mode]=(mode>0 && !trial_set) ? "未試算" :
+                            (missing ? "未設定あり" : "算出不可");
          values[kind][mode]=0;
          valid[kind][mode]=(mode!=2 || ranking_ok) &&
-                           (mode==0 || (tp ? InpTrialTP>0 : InpTrialSL>0)) &&
+                           (mode==0 || trial_set) &&
                            ScenarioSumCase(positions,count,selected,tp,mode,values[kind][mode]);
       }
    }
    string currency=AccountInfoString(ACCOUNT_CURRENCY);
-   ScenarioRender(count,ranking_ok,values,valid,account_current,symbol_current,other_tp,other_sl,
-          other_tp_ok,other_sl_ok,currency);
+   ScenarioRender(count,ranking_ok,all_lots,half_lots,values,valid,status,
+          other_tp_missing,other_sl_missing,
+          account_current,symbol_current,other_tp,other_sl,other_tp_ok,other_sl_ok,currency);
    PrintFormat("PositionScenario totals: TP current=%s all=%s half=%s; SL current=%s all=%s half=%s",
                valid[0][0] ? ScenarioSignedMoney(values[0][0],currency) : "unavailable",
                valid[0][1] ? ScenarioSignedMoney(values[0][1],currency) : "unavailable",
@@ -409,21 +482,39 @@ void ScenarioRefreshCurrent()
 {
    string symbol_name=ScenarioPanelPrefix()+"symbol_current";
    string account_name=ScenarioPanelPrefix()+"account_current";
-   if(ObjectFind(0,symbol_name)<0 || ObjectFind(0,account_name)<0) return;
+   string symbol_value=ScenarioPanelPrefix()+"symbol_current_value";
+   string account_value=ScenarioPanelPrefix()+"account_current_value";
+   if(ObjectFind(0,symbol_name)<0 || ObjectFind(0,account_name)<0 ||
+      ObjectFind(0,symbol_value)<0 || ObjectFind(0,account_value)<0) return;
    double symbol_profit=0;
    for(int i=0;i<PositionsTotal();i++)
    {
       if(PositionGetTicket(i)==0) return;
       if(PositionGetString(POSITION_SYMBOL)==_Symbol)
-         symbol_profit+=PositionGetDouble(POSITION_PROFIT);
+         symbol_profit+=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
    }
    double account_profit=AccountInfoDouble(ACCOUNT_PROFIT);
    string currency=AccountInfoString(ACCOUNT_CURRENCY);
-   ObjectSetString(0,symbol_name,OBJPROP_TEXT,
-                   _Symbol+" 現在損益  "+ScenarioSignedMoney(symbol_profit,currency));
+   ObjectSetString(0,symbol_value,OBJPROP_TEXT,ScenarioSignedMoney(symbol_profit,currency));
    ObjectSetInteger(0,symbol_name,OBJPROP_COLOR,ScenarioAmountColor(symbol_profit));
-   ObjectSetString(0,account_name,OBJPROP_TEXT,
-                   "口座現在損益  "+ScenarioSignedMoney(account_profit,currency));
+   ObjectSetInteger(0,symbol_value,OBJPROP_COLOR,ScenarioAmountColor(symbol_profit));
+   ObjectSetString(0,account_value,OBJPROP_TEXT,ScenarioSignedMoney(account_profit,currency));
    ObjectSetInteger(0,account_name,OBJPROP_COLOR,ScenarioAmountColor(account_profit));
+   ObjectSetInteger(0,account_value,OBJPROP_COLOR,ScenarioAmountColor(account_profit));
+   // Other indicators can recreate horizontal-line objects after this panel.
+   // Requeue our objects in their original order so the opaque panel remains
+   // above those lines without changing or hiding anyone else's chart objects.
+   string background=ScenarioPanelPrefix()+"background";
+   if(ObjectFind(0,background)>=0)
+   {
+      ObjectSetInteger(0,background,OBJPROP_TIMEFRAMES,OBJ_NO_PERIODS);
+      ObjectSetInteger(0,background,OBJPROP_TIMEFRAMES,OBJ_ALL_PERIODS);
+      for(int i=0;i<ArraySize(scenario_label_names);i++)
+      {
+         string name=scenario_label_names[i];
+         ObjectSetInteger(0,name,OBJPROP_TIMEFRAMES,OBJ_NO_PERIODS);
+         ObjectSetInteger(0,name,OBJPROP_TIMEFRAMES,OBJ_ALL_PERIODS);
+      }
+   }
    ChartRedraw(0);
 }

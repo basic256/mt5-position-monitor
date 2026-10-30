@@ -39,6 +39,7 @@ input color InpProfitColor=clrLimeGreen;    // 利益の色
 input color InpLossColor=clrRed;             // 損失の色
 input color InpInfoColor=clrWhite;          // 補助文字の色
 input color InpWarningColor=clrOrange;      // 未設定・計算不可の色
+input color InpMissingColor=clrYellow;       // TP/SL未設定行の色
 input color InpCurrentProfitColor=clrDodgerBlue; // 現在損益がプラスの色
 input color InpCurrentLossColor=clrRed;     // 現在損益がマイナスの色
 input color InpMarginCallColor=clrRed;       // マージンコール以下の維持率の色
@@ -68,6 +69,8 @@ bool layout_measure_requested=false;
 bool monitor_hidden=false;
 bool scenario_hidden=false;
 int max_background_width=0;
+string monitor_label_names[];
+uint last_monitor_raise=0;
 string scenario_position_key="";
 uint last_scenario_check=0;
 #include "PositionScenarioPanel.mqh"
@@ -255,6 +258,20 @@ bool PutLabel(const string suffix,const string text,const int row,const color co
    if(created && !ObjectCreate(0,name,OBJ_LABEL,0,0,0)) return false;
    if(created)
    {
+      // Keep a small fixed set of visible labels for foreground refresh.
+      // Some warning/annotation labels are deleted and recreated as values change.
+      if(StringFind(suffix,"width_")!=0)
+      {
+         bool known=false;
+         for(int i=0;i<ArraySize(monitor_label_names);i++)
+            if(monitor_label_names[i]==name) { known=true; break; }
+         if(!known)
+         {
+            int index=ArraySize(monitor_label_names);
+            ArrayResize(monitor_label_names,index+1);
+            monitor_label_names[index]=name;
+         }
+      }
       layout_dirty=true;
       layout_measure_requested=false;
       // Keep every part off-screen until all labels have measurable widths.
@@ -305,8 +322,8 @@ bool PutLabel(const string suffix,const string text,const int row,const color co
    if(suffix=="price") tip="現在チャート銘柄の価格。損益分岐・ロスカットとの比較のため、これらの推定レートと同じ価格基準を表示します。";
    if(suffix=="account_tp" || suffix=="account_sl")
       tip="口座内の全保有銘柄がそれぞれ現在設定のTP/SLで決済された場合の合計。未設定は合計から除外し、黄色で警告します。";
-   if(suffix=="symbol_profit") tip="現在チャート銘柄の含み損益。各保有ポジションのPOSITION_PROFITの合計で、スワップは含みません。右側は口座残高に対する増減率です。";
-   if(suffix=="current_profit") tip="口座全体の現在の含み損益。MT5のACCOUNT_PROFITを表示し、スワップは含みません。右側は口座残高に対する増減率です。";
+   if(suffix=="symbol_profit") tip="現在チャート銘柄の含み損益。各保有ポジションのPOSITION_PROFITと発生済みPOSITION_SWAPの合計です。右側は口座残高に対する増減率です。";
+   if(suffix=="current_profit") tip="口座全体の現在の含み損益。MT5のACCOUNT_PROFITを表示します。この口座では発生済みスワップを反映しています。右側は口座残高に対する増減率です。";
    if(suffix=="balance") tip="口座全体の残高。未決済ポジションの損益は含みません。";
    if(suffix=="equity") tip="口座全体の有効証拠金。現在の未決済損益を反映したMT5の口座値です。";
    if(suffix=="used_margin") tip="口座全体の必要証拠金。MT5の口座値です。";
@@ -433,8 +450,7 @@ void SetMissingWarning(const string suffix,const int missing,const int row)
       if(ObjectFind(0,name)>=0) ObjectDelete(0,name);
       return;
    }
-   PutLabel(suffix+"_missing","未設定 "+IntegerToString(missing)+"件・一部合計",
-            row,clrYellow,InpFontSize);
+   PutLabel(suffix+"_missing","未設定あり",row,InpMissingColor,InpFontSize);
    ObjectSetString(0,name,OBJPROP_TOOLTIP,
                    "TP/SL未設定のポジションは合計損益に含めません。");
 }
@@ -457,8 +473,10 @@ void MoneyRows(const int first_row,const int missing_tp,const int error_tp,
                const int account_missing_sl,const int account_error_sl)
 {
    double balance=AccountInfoDouble(ACCOUNT_BALANCE);
-   color tp_color=!valid_tp ? InpWarningColor : (total_tp<0 ? InpLossColor : InpProfitColor);
-   color sl_color=!valid_sl ? InpWarningColor : (total_sl<0 ? InpLossColor : InpProfitColor);
+   color tp_color=missing_tp>0 ? InpMissingColor :
+                  (!valid_tp ? InpWarningColor : (total_tp<0 ? InpLossColor : InpProfitColor));
+   color sl_color=missing_sl>0 ? InpMissingColor :
+                  (!valid_sl ? InpWarningColor : (total_sl<0 ? InpLossColor : InpProfitColor));
    RenderValueRow("tp",InpCurrentSymbolOnly ? "TP合計(銘柄)" : "TP合計(口座)",
                   StringSubstr(RowText("",total_tp,error_tp),2),first_row,tp_color);
    RenderValueRow("sl",InpCurrentSymbolOnly ? "SL合計(銘柄)" : "SL合計(口座)",
@@ -471,10 +489,12 @@ void MoneyRows(const int first_row,const int missing_tp,const int error_tp,
    SetMissingWarning("sl",missing_sl,first_row+1);
    if(InpCurrentSymbolOnly && InpShowAccountTotals)
    {
-      color account_tp_color=!valid_account_tp ? InpWarningColor :
-                             (account_tp<0 ? InpLossColor : InpProfitColor);
-      color account_sl_color=!valid_account_sl ? InpWarningColor :
-                             (account_sl<0 ? InpLossColor : InpProfitColor);
+      color account_tp_color=account_missing_tp>0 ? InpMissingColor :
+                             (!valid_account_tp ? InpWarningColor :
+                              (account_tp<0 ? InpLossColor : InpProfitColor));
+      color account_sl_color=account_missing_sl>0 ? InpMissingColor :
+                             (!valid_account_sl ? InpWarningColor :
+                              (account_sl<0 ? InpLossColor : InpProfitColor));
       RenderValueRow("account_tp","TP合計(口座)",StringSubstr(RowText("",account_tp,account_error_tp),2),
                      first_row+2,account_tp_color);
       RenderValueRow("account_sl","SL合計(口座)",StringSubstr(RowText("",account_sl,account_error_sl),2),
@@ -639,8 +659,19 @@ void AlignDetailRows()
       generic_width=(int)MathMax(generic_width,money_unit_width+gap+margin_tail_width);
    }
    int ratio_width=money_unit_width+(ratio_value_width>0 ? gap+annotation_value_width+ratio_suffix_width : 0);
-   int rate_width=(rate_value_width>0 ? money_unit_width+gap+annotation_value_width+rate_middle_width+rate_pips_width : 0);
-   int suffix_width=(int)MathMax(generic_width,MathMax(ratio_width,rate_width));
+   const int rate_pair_gap=16;
+   int rate_width=(rate_value_width>0 ? money_unit_width+gap+annotation_value_width+rate_middle_width+rate_pair_gap+rate_pips_width : 0);
+   string warning_names[4]={"tp_missing","sl_missing","account_tp_missing","account_sl_missing"};
+   int warning_width=0;
+   for(int i=0;i<4;i++)
+   {
+      string warning_name=prefix+warning_names[i];
+      if(ObjectFind(0,warning_name)>=0)
+         warning_width=(int)MathMax(warning_width,ObjectGetInteger(0,warning_name,OBJPROP_XSIZE));
+   }
+   const int warning_extra_gap=24;
+   int warning_suffix_width=(warning_width>0 ? money_unit_width+gap+warning_extra_gap+warning_width : 0);
+   int suffix_width=(int)MathMax(MathMax(generic_width,warning_suffix_width),MathMax(ratio_width,rate_width));
    int width=title_width+gap+value_width+(suffix_width>0 ? gap+suffix_width : 0);
    int origin=(int)MathMax(0,InpX)+(right ? width : 0);
    int direction=(right ? -1 : 1);
@@ -690,13 +721,13 @@ void AlignDetailRows()
          ObjectSetInteger(0,base+"_suffix",OBJPROP_ANCHOR,left_anchor);
          ObjectSetInteger(0,base+"_suffix",OBJPROP_XDISTANCE,ratio_end);
       }
-      string warning_names[4]={"tp_missing","sl_missing","account_tp_missing","account_sl_missing"};
+      int warning_start=note_start+direction*(money_unit_width+gap+warning_extra_gap);
       for(int i=0;i<4;i++)
       {
          string name=prefix+warning_names[i];
          if(ObjectFind(0,name)<0) continue;
          ObjectSetInteger(0,name,OBJPROP_ANCHOR,left_anchor);
-         ObjectSetInteger(0,name,OBJPROP_XDISTANCE,ratio_start);
+         ObjectSetInteger(0,name,OBJPROP_XDISTANCE,warning_start);
       }
       int rate_value_end=ratio_end-direction*ratio_shift;
       int widest_rate_text=0;
@@ -717,7 +748,7 @@ void AlignDetailRows()
          int integer_shift=(int)MathMin(14,right ? MathMax(0,InpX+rate_shift-6) : 14);
          rate_value_end+=direction*integer_shift;
       }
-      int rate_pips_end=rate_value_end+direction*(rate_middle_width+rate_pips_width-rate_shift);
+      int rate_pips_end=rate_value_end+direction*(rate_middle_width+rate_pair_gap+rate_pips_width-rate_shift);
       for(int i=0;i<2;i++)
       {
          string base=prefix+rate_names[i]+"_rate";
@@ -995,7 +1026,8 @@ void Refresh()
       if(PositionGetTicket(i)==0) { snapshot_failed=true; continue; }
       string symbol=PositionGetString(POSITION_SYMBOL);
       bool selected=!InpCurrentSymbolOnly || symbol==_Symbol;
-      if(symbol==_Symbol) symbol_current_profit+=PositionGetDouble(POSITION_PROFIT);
+      if(symbol==_Symbol)
+         symbol_current_profit+=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
       account_positions++;
       if(!selected && !InpShowAccountTotals) continue;
       if(selected) total_positions++;
@@ -1147,6 +1179,8 @@ int OnInit()
    prefix="PositionMonitor_"+IntegerToString(ChartID())+"_";
    ObjectsDeleteAll(0,prefix);
    ObjectsDeleteAll(0,ScenarioPrefix());
+   ArrayResize(monitor_label_names,0);
+   last_monitor_raise=0;
    last_layout_tick=0;
    layout_dirty=true;
    layout_visible=false;
@@ -1197,6 +1231,28 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    Refresh();
+   // A chart indicator may draw horizontal lines after our panel is created.
+   // Requeue only our background and visible labels, leaving chart lines intact.
+   uint monitor_now=GetTickCount();
+   if(!monitor_hidden && layout_visible &&
+      (last_monitor_raise==0 || monitor_now-last_monitor_raise>=1000))
+   {
+      last_monitor_raise=monitor_now;
+      string background=prefix+"background";
+      if(ObjectFind(0,background)>=0)
+      {
+         ObjectSetInteger(0,background,OBJPROP_TIMEFRAMES,OBJ_NO_PERIODS);
+         ObjectSetInteger(0,background,OBJPROP_TIMEFRAMES,OBJ_ALL_PERIODS);
+      }
+      for(int i=0;i<ArraySize(monitor_label_names);i++)
+      {
+         string name=monitor_label_names[i];
+         if(ObjectFind(0,name)<0) continue;
+         ObjectSetInteger(0,name,OBJPROP_TIMEFRAMES,OBJ_NO_PERIODS);
+         ObjectSetInteger(0,name,OBJPROP_TIMEFRAMES,OBJ_ALL_PERIODS);
+      }
+      ChartRedraw(0);
+   }
    if(!scenario_hidden)
    {
       uint now=GetTickCount();
