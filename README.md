@@ -8,6 +8,9 @@
 src/PositionMonitor.mq5        ソースコード
 build/PositionMonitor.ex5      コンパイル済みインジケータ
 build/PositionMonitor.compile.log  コンパイル結果
+src/PositionScenario.mq5       仮TP/SLの一回実行試算スクリプト
+build/PositionScenario.ex5     コンパイル済み試算スクリプト
+build/PositionScenario.compile.log  コンパイル結果
 verification/tp-sl.json        TP・SL計算の検証記録（v1.00）
 verification/rates.json        損益分岐・ロスカット計算の検証記録
 ```
@@ -100,3 +103,13 @@ TP・SL・損益分岐・ロスカット・維持率の数値を共通の右端�
 `verification/tp-sl.json` と `verification/rates.json` に独立した算式の検証とMT5ポジションの照合値を保存しています。
 インジケータは起動時に金額整形の自己チェックも実行します。
 計算仕様はMetaQuotesの https://www.mql5.com/en/book/automation/experts/experts_ordercalcprofit に従っています。
+
+## 仮TP/SLの試算
+
+`PositionScenario` は `PositionMonitor` と別の読み取り専用スクリプトです。MT5の `MQL5\Scripts\Custom\PositionScenario.ex5` に配置し、必要なときだけ現在のチャートで実行します。実行後は右上に結果を残し、再実行すると前回の表示を更新します。`InpClearResult=true` で表示だけを消せます。タイマーは使いません。
+
+`InpTrialTP` と `InpTrialSL` に仮の価格を入力します。0ならその項目の仮試算は行いません。現在のチャート銘柄の保有ポジションについて、現在設定、全件を仮価格に変更、半数だけを仮価格に変更した場合の合計損益と、現状からの差額をTP/SL別に表示します。TP到達とSL到達は別々の仮定で、価格到達の順序は予測しません。実際のTP/SL・注文・ポジションは変更しません。
+
+半数は、各ポジションの**現在TPでの見込利益が小さい順**に選びます。奇数件では端数を切り捨て、同額ならチケット番号の小さい順です。TPとSLの半数試算には同じポジションを使い、残りのポジションには現在設定を適用します。現在TPが未設定または計算不可なら半数を選べないため、半数試算は「算出不可」と表示します。
+
+損益はMT5の `OrderCalcProfit` で口座通貨建てに計算し、設定に応じて発生済みスワップと入力した将来の決済手数料を反映します。現在TP/SLが未設定の場合、その合計や差額は「算出不可」です。将来のスワップ、滑り、価格到達前の部分決済、ブローカーによるTP/SL価格の許可判定は含みません。結果は実行時点のスナップショットなので、ポジションやスワップが変わったら再実行してください。
