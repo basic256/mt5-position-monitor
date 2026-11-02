@@ -1,4 +1,4 @@
 # Preserve byte-for-byte source evidence and its SHA-256 across platforms.
 raw_h1.json -text
 raw_h4.json -text
-japan_holidays_official.csv -text
+japan_holidays_official.csv binary
