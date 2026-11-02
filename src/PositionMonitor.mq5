@@ -318,7 +318,7 @@ bool PutLabel(const string suffix,const string text,const int row,const color co
       "スワップ込: 現在までに発生したスワップをTP/SL合計と損益分岐に含めます。将来分は含みません。" :
       "スワップ除外: TP/SL合計と損益分岐では発生済みスワップを除外します。口座情報はMT5の値をそのまま表示します。";
    if(suffix=="so") tip="最初の強制決済の推定開始価格。現在の必要証拠金・他銘柄損益・為替・スプレッドを固定し、途中のSL/TP決済を無視した仮定です。全件決済価格ではありません。価格基準はショートのみAsk、ロングのみBid、両建ては固定スプレッドのBid換算。";
-   if(suffix=="be") tip="現在チャート銘柄の合計損益がゼロになる決済価格。Swap設定と入力済み決済手数料を反映。価格基準はショートのみAsk、ロングのみBid、両建ては固定スプレッドのBid換算。";
+   if(suffix=="be") tip="現在チャート銘柄の合計損益がマイナスにならない決済価格。設定可能な価格刻みに利益側へ丸めます。Swap設定と入力済み決済手数料を反映。ショートのみAsk、ロングのみBid、両建ては固定スプレッドのBid換算。";
    if(suffix=="price") tip="現在チャート銘柄の価格。損益分岐・ロスカットとの比較のため、これらの推定レートと同じ価格基準を表示します。";
    if(suffix=="account_tp" || suffix=="account_sl")
       tip="口座内の全保有銘柄がそれぞれ現在設定のTP/SLで決済された場合の合計。未設定は合計から除外し、黄色で警告します。";
@@ -776,6 +776,22 @@ bool SolveRate(const double base,const double slope,const double current_value,
    price=result;
    return true;
 }
+// Round the exact zero-profit price to a tradable price on the profitable side.
+bool ExecutableBreakEven(const double exact,const double slope,const double step,
+                         const int digits,double &price)
+{
+   price=EMPTY_VALUE;
+   if(!MathIsValidNumber(exact) || exact<=0 || !MathIsValidNumber(step) || step<=0 ||
+      MathAbs(slope)<1e-10 || digits<0) return false;
+   double units=exact/step;
+   double ticks=slope>0 ? MathCeil(units) : MathFloor(units);
+   double result=NormalizeDouble(ticks*step,digits);
+   if(slope*(result-exact)<0)
+      result=NormalizeDouble(result+(slope>0 ? step : -step),digits);
+   if(!MathIsValidNumber(result) || result<=0) return false;
+   price=result;
+   return true;
+}
 // For a Forex pair whose base is the account currency, convert each position's
 // quote-currency P/L at the hypothetical close. Keep the current spread fixed.
 // Positive quote P/L buys account currency at Ask; a loss sells it at Bid.
@@ -923,6 +939,14 @@ void RefreshRates(const int first_row,const double symbol_current_profit)
             (fx_ready && SolveFxRate(base,quote.ask-quote.bid,ask_basis,entries,quantities,
                                      directions,count,fees-(InpIncludeSwap ? swaps : 0),break_even)) :
             SolveRate(base,slope,net,0,break_even);
+         if(be_found)
+         {
+            double step=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+            double point=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+            if(!MathIsValidNumber(step) || step<=0) step=point;
+            if(MathIsValidNumber(point) && point>step) step=point;
+            be_found=ExecutableBreakEven(break_even,slope,step,digits,break_even);
+         }
          if(be_found)
             be_text+=Grouped(break_even,digits)+(direct_fx ? " 概算" : "");
          else be_text+=(fx_ready ? "正の価格に該当なし" : "計算不可");
@@ -1125,6 +1149,12 @@ bool SelfTest()
    if(!SolveRate(100,2,20,0,rate) || MathAbs(rate-90)>1e-7) return false;
    if(SolveRate(100,0,20,0,rate)) return false;
    if(SolveRate(100,1,200,0,rate)) return false;
+   if(!ExecutableBreakEven(78129.5066666667,-3,1,0,rate) || rate!=78129 ||
+      -3*(rate-78129.5066666667)<0) return false;
+   if(!ExecutableBreakEven(100.1,2,1,0,rate) || rate!=101 ||
+      2*(rate-100.1)<0) return false;
+   if(!ExecutableBreakEven(157.1234,-1,0.001,3,rate) ||
+      MathAbs(rate-157.123)>1e-9) return false;
    double fx_entries[1]={150.0},fx_quantities[1]={100000.0};
    bool fx_buys[1]={true};
    double fx_gross;
