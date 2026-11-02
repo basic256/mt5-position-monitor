@@ -1,0 +1,2 @@
+﻿date,weekday,holiday_name,official_holiday_name,group,nyse,lse,server_utc_offset,start_jst,end_jst,start_server,end_server,start_price,end_price,return_pct,direction,method
+2026-09-22,火,国民の休日,休日,国民の休日,通常営業,通常営業,3,2026-09-22T09:00:00+09:00,2026-09-22T16:00:00+09:00,2026-09-22T03:00:00,2026-09-22T10:00:00,86577,85329,-1.4414913891680239,下落,H1 open-to-open
